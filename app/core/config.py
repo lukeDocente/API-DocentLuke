@@ -1,4 +1,6 @@
 import os
+import re
+from urllib.parse import quote_plus
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,13 +21,30 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_url(self) -> str:
-        url = self.database_url
+        url = (self.database_url or "").strip()
+
+        # Si está vacío o tiene placeholders de ejemplo, usar SQLite
+        if not url or "[region]" in url or "[TU_" in url or "[YOUR" in url:
+            return "sqlite:///./asistencia.db"
+
+        # Limpiar corchetes y comillas accidentales en contraseñas como ["mi_password"]
+        url = re.sub(r':\["([^"]+)"\]@', r':\1@', url)
+        url = re.sub(r':\[([^\]]+)\]@', r':\1@', url)
+        url = re.sub(r':"([^"]+)"@', r':\1@', url)
+
+        # Si la contraseña contiene '#' sin codificar como '%23', codificarla
+        # formato: postgresql://user:password@host
+        match = re.search(r'://([^:]+):([^@]+)@', url)
+        if match:
+            user = match.group(1)
+            raw_pass = match.group(2)
+            if "#" in raw_pass and not "%23" in raw_pass:
+                encoded_pass = raw_pass.replace("#", "%23")
+                url = url.replace(f":{raw_pass}@", f":{encoded_pass}@", 1)
+
+        # Normalizar prefijo postgres
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
-
-        # Si contiene placeholders aún no reemplazados, usar SQLite local
-        if "[region]" in url or "[TU_" in url or "[YOUR" in url:
-            return "sqlite:///./asistencia.db"
 
         # Adaptar driver psycopg3 vs psycopg2 según el entorno
         if "postgresql+psycopg://" in url:
@@ -39,6 +58,12 @@ class Settings(BaseSettings):
                 url = url.replace("postgresql://", "postgresql+psycopg://", 1)
             except ImportError:
                 url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+        # Para Supabase remoto, asegurar sslmode=require si no está presente
+        if ("supabase.co" in url or "pooler.supabase.com" in url) and "sslmode" not in url:
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}sslmode=require"
+
         return url
 
 
