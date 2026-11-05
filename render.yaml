@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: asistencia-qr-api
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.9
+      - key: QR_SECRET
+        value: LukeDocente_IA
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ACCESS_TOKEN_MINUTES
+        value: "15"
+      - key: REFRESH_TOKEN_DAYS
+        value: "7"
+      - key: QR_WINDOW_SECONDS
+        value: "20"
+      - key: SUPABASE_URL
+        value: https://qzjqazvcbmpwpniyzzwj.supabase.co
+      - key: SUPABASE_KEY
+        value: sb_publishable_Bha30IQsxMoTI0gOX3embQ_gX9HAdM6
+      - key: DATABASE_URL
+        sync: false
+

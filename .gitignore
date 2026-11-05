@@ -1,0 +1,38 @@
+# Variables de entorno y secretos sensibles
+.env
+.env.*
+!.env.example
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Bases de datos locales
+*.db
+*.sqlite
+*.sqlite3
+
+# Pruebas y cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+
+# Logs y temporales
+*.log
+tmp/
+temp/
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
