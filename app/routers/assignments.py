@@ -104,7 +104,9 @@ def actualizar_tarea(
     if req.abierta is not None:
         tarea.abierta = req.abierta
     if req.nombre is not None:
-        tarea.nombre = req.nombre
+        tarea.nombre = req.nombre.strip()
+    if req.puntaje_max is not None:
+        tarea.puntaje_max = req.puntaje_max
 
     db.commit()
     db.refresh(tarea)
@@ -117,6 +119,30 @@ def actualizar_tarea(
         abierta=tarea.abierta,
         created_at=tarea.created_at,
     )
+
+
+@router.delete("/{id}", status_code=status.HTTP_200_OK)
+def eliminar_tarea(
+    id: str,
+    current_user: User = Depends(require_role(["profesor", "admin"])),
+    db: Session = Depends(get_db),
+):
+    tarea = db.query(Assignment).filter(Assignment.id == id).first()
+    if not tarea:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"codigo": "TAREA_NO_ENCONTRADA", "mensaje": "Tarea no encontrada"},
+        )
+
+    # Eliminar entregas y auditorías asociadas
+    submissions = db.query(Submission).filter(Submission.assignment_id == tarea.id).all()
+    for s in submissions:
+        db.query(GradeAudit).filter(GradeAudit.submission_id == s.id).delete()
+        db.delete(s)
+
+    db.delete(tarea)
+    db.commit()
+    return {"status": "success", "mensaje": f"Tarea '{tarea.nombre}' eliminada exitosamente"}
 
 
 @router.get("/{id}/submissions", response_model=list[SubmissionOut])

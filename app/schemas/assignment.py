@@ -11,6 +11,7 @@ class AssignmentCreate(BaseModel):
 class AssignmentUpdate(BaseModel):
     abierta: bool | None = None
     nombre: str | None = None
+    puntaje_max: float | None = None
 
 
 class AssignmentOut(BaseModel):

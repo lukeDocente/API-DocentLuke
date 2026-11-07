@@ -25,6 +25,16 @@ class CreateStudentRequest(BaseModel):
     section_id: str | None = Field(None, description="ID opcional de la sección para inscribirlo inmediatamente")
 
 
+class UpdateStudentRequest(BaseModel):
+    nombre: str | None = None
+    carnet: str | None = None
+    tel_encargado: str | None = None
+    consentimiento_whatsapp: bool | None = None
+    password: str | None = None
+    section_id: str | None = None
+
+
+
 @router.post("/students", status_code=status.HTTP_201_CREATED)
 def crear_alumno(
     req: CreateStudentRequest,
@@ -167,6 +177,106 @@ def listar_alumnos(
             "secciones": secciones,
         })
     return resultado
+
+
+@router.patch("/students/{id}")
+def modificar_alumno(
+    id: str,
+    req: UpdateStudentRequest,
+    current_user: User = Depends(require_role(["admin", "profesor"])),
+    db: Session = Depends(get_db),
+):
+    student = db.query(Student).filter(Student.id == id).first()
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"codigo": "ALUMNO_NO_ENCONTRADO", "mensaje": "Estudiante no encontrado"},
+        )
+
+    if req.nombre is not None:
+        student.nombre = req.nombre.strip()
+    if req.carnet is not None:
+        nuevo_carnet = req.carnet.strip().upper()
+        # Verificar que no esté duplicado en otro alumno
+        dup = db.query(Student).filter(Student.carnet == nuevo_carnet, Student.id != id).first()
+        if dup:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"codigo": "CARNET_DUPLICADO", "mensaje": f"El carnet {nuevo_carnet} ya pertenece a otro alumno"},
+            )
+        student.carnet = nuevo_carnet
+
+    if req.tel_encargado is not None:
+        student.tel_encargado = req.tel_encargado.strip() or None
+    if req.consentimiento_whatsapp is not None:
+        student.consentimiento_whatsapp = req.consentimiento_whatsapp
+
+    if req.password is not None and len(req.password) >= 6:
+        if student.user:
+            student.user.password_hash = security.hash_password(req.password)
+
+    if req.section_id:
+        seccion = db.query(Section).filter(Section.id == req.section_id).first()
+        if seccion:
+            ya_inscrito = db.query(Enrollment).filter(
+                Enrollment.student_id == student.id,
+                Enrollment.section_id == seccion.id,
+            ).first()
+            if not ya_inscrito:
+                enrollment = Enrollment(student_id=student.id, section_id=seccion.id)
+                db.add(enrollment)
+
+    db.commit()
+    db.refresh(student)
+    return {
+        "status": "success",
+        "mensaje": f"Alumno '{student.nombre}' actualizado exitosamente",
+        "student": {
+            "id": student.id,
+            "carnet": student.carnet,
+            "nombre": student.nombre,
+            "tel_encargado": student.tel_encargado,
+        },
+    }
+
+
+@router.delete("/students/{id}", status_code=status.HTTP_200_OK)
+def eliminar_alumno(
+    id: str,
+    current_user: User = Depends(require_role(["admin", "profesor"])),
+    db: Session = Depends(get_db),
+):
+    student = db.query(Student).filter(Student.id == id).first()
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"codigo": "ALUMNO_NO_ENCONTRADO", "mensaje": "Estudiante no encontrado"},
+        )
+
+    # 1. Eliminar asistencias
+    from app.models import AttendanceRecord, GradeAudit, Submission
+    db.query(AttendanceRecord).filter(AttendanceRecord.student_id == student.id).delete()
+
+    # 2. Eliminar entregas y auditorías
+    submissions = db.query(Submission).filter(Submission.student_id == student.id).all()
+    for s in submissions:
+        db.query(GradeAudit).filter(GradeAudit.submission_id == s.id).delete()
+        db.delete(s)
+
+    # 3. Eliminar matrículas
+    db.query(Enrollment).filter(Enrollment.student_id == student.id).delete()
+
+    # 4. Eliminar perfil de estudiante y usuario
+    user_id = student.user_id
+    nombre = student.nombre
+    db.delete(student)
+    if user_id:
+        user = db.query(User).filter(User.id == user_id).first()
+        if user:
+            db.delete(user)
+
+    db.commit()
+    return {"status": "success", "mensaje": f"Estudiante '{nombre}' eliminado exitosamente"}
 
 
 @router.get("/sections")

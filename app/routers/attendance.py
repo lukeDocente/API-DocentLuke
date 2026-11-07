@@ -1,5 +1,7 @@
+import csv
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+import io
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from pydantic import BaseModel
@@ -190,6 +192,67 @@ def obtener_roster_asistencia(
         "total_presentes": total_presentes,
         "alumnos": roster,
     }
+
+
+@router.get("/sessions/{id}/export")
+def exportar_asistencia_csv(
+    id: str,
+    current_user: User = Depends(require_role(["profesor", "admin"])),
+    db: Session = Depends(get_db),
+):
+    """Genera y descarga un comprobante / reporte oficial de asistencia en formato CSV."""
+    sesion = db.query(AttendanceSession).filter(AttendanceSession.id == id).first()
+    if not sesion:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"codigo": "SESION_NO_ENCONTRADA", "mensaje": "La sesión no existe"},
+        )
+
+    enrollments = db.query(Enrollment).filter(Enrollment.section_id == sesion.section_id).all()
+    records = {
+        r.student_id: r.escaneado_en
+        for r in db.query(AttendanceRecord).filter(AttendanceRecord.session_id == id).all()
+    }
+
+    materia = sesion.section.course.nombre if (sesion.section and sesion.section.course) else "Materia"
+    seccion = sesion.section.nombre if sesion.section else "Sección"
+    fecha_str = sesion.abierta_en.strftime("%Y-%m-%d")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["REPORTE OFICIAL DE ASISTENCIA ESCOLAR"])
+    writer.writerow(["Materia / Grado", materia])
+    writer.writerow(["Sección", seccion])
+    writer.writerow(["Fecha de Sesión", fecha_str])
+    writer.writerow(["Hora de Apertura", sesion.abierta_en.strftime("%H:%M:%S")])
+    writer.writerow([])
+    writer.writerow(["No.", "NIE / Carnet", "Nombre Completo del Alumno", "Estado", "Hora de Registro"])
+
+    roster = []
+    for e in enrollments:
+        s = e.student
+        if s:
+            roster.append(s)
+    roster.sort(key=lambda s: s.nombre)
+
+    for i, s in enumerate(roster, 1):
+        hora_reg = records.get(s.id)
+        estado = "PRESENTE" if hora_reg else "AUSENTE"
+        hora_str = hora_reg.strftime("%H:%M:%S") if hora_reg else "-"
+        writer.writerow([i, s.carnet, s.nombre, estado, hora_str])
+
+    total_presentes = len(records)
+    total_inscritos = len(roster)
+    writer.writerow([])
+    writer.writerow(["TOTALES:", f"{total_presentes} Presentes de {total_inscritos} Alumnos ({round((total_presentes/total_inscritos*100) if total_inscritos else 0, 1)}%)"])
+
+    csv_data = "\ufeff" + output.getvalue()
+    filename = f"Asistencia_{materia.replace(' ', '_')}_{seccion.replace(' ', '_')}_{fecha_str}.csv"
+    return Response(
+        content=csv_data.encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/sessions/{id}/scan-student")
