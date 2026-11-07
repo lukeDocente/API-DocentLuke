@@ -28,7 +28,7 @@ class CreateStudentRequest(BaseModel):
 @router.post("/students", status_code=status.HTTP_201_CREATED)
 def crear_alumno(
     req: CreateStudentRequest,
-    current_user: User = Depends(require_role(["admin"])),
+    current_user: User = Depends(require_role(["admin", "profesor"])),
     db: Session = Depends(get_db),
 ):
     """Permite al Administrador registrar un alumno con su correo y contraseña para que pueda iniciar sesión."""
@@ -142,7 +142,7 @@ def descargar_carnet_estudiante(
 
 @router.get("/students")
 def listar_alumnos(
-    current_user: User = Depends(require_role(["admin"])),
+    current_user: User = Depends(require_role(["admin", "profesor"])),
     db: Session = Depends(get_db),
 ):
     """Lista todos los alumnos registrados para el panel de administración."""

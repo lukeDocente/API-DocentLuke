@@ -191,3 +191,100 @@ alter table public.assignments         enable row level security;
 alter table public.submissions         enable row level security;
 alter table public.deliveries_log      enable row level security;
 alter table public.grade_audit         enable row level security;
+
+-- ============================================================================
+-- DATOS INICIALES SEMILLA (5° Grado, Sección A, Docente y 25 Alumnos Oficiales)
+-- ============================================================================
+
+DO $$
+DECLARE
+  v_admin_id uuid;
+  v_course_id uuid;
+  v_section_id uuid;
+  v_assign_id uuid;
+  v_user_id uuid;
+  v_student_id uuid;
+BEGIN
+  -- 1. Super Usuario / Administrador
+  INSERT INTO public.users (email, password_hash, rol, activo)
+  VALUES ('lukesolis@edu.sv', '$2b$12$4Lp1x9Q4Lq9eWvXpW2QW8uO7P0K0X0Z0Y0W0V0U0T0S0R0Q0P0O0N', 'admin', true)
+  ON CONFLICT (email) DO UPDATE SET rol = 'admin', activo = true
+  RETURNING id INTO v_admin_id;
+
+  -- 2. Curso 5° Grado
+  INSERT INTO public.courses (profesor_id, nombre, ciclo)
+  VALUES (v_admin_id, '5° Grado - Educación Básica', '2026')
+  ON CONFLICT DO NOTHING;
+
+  SELECT id INTO v_course_id FROM public.courses WHERE nombre = '5° Grado - Educación Básica' LIMIT 1;
+
+  -- 3. Sección A
+  INSERT INTO public.sections (course_id, nombre)
+  VALUES (v_course_id, 'Sección A')
+  ON CONFLICT DO NOTHING;
+
+  SELECT id INTO v_section_id FROM public.sections WHERE course_id = v_course_id AND nombre = 'Sección A' LIMIT 1;
+
+  -- 4. Tarea 1
+  INSERT INTO public.assignments (course_id, nombre, puntaje_max, abierta)
+  VALUES (v_course_id, 'Tarea 1 - Revisión de Cuaderno', 10.00, true)
+  ON CONFLICT DO NOTHING;
+
+  -- 5. Sembrar los 25 alumnos oficiales
+  CREATE TEMP TABLE temp_alumnos (nie text, nombre text) ON COMMIT DROP;
+  INSERT INTO temp_alumnos (nie, nombre) VALUES
+    ('10351778', 'ARAUJO VALLECIOS, DOMINIC MATEO'),
+    ('10351712', 'AREVALO MOLINA, CRISTIAN ALEJANDRO'),
+    ('10387707', 'AREVALO PEREZ, ASHLEY SOFIA'),
+    ('10491628', 'AREVALO RAMIREZ, MARIANA VALENTINA'),
+    ('10151625', 'BRITO RAMIREZ, DIANA VIOLETA'),
+    ('10351747', 'CARTAGENA SIERRA, RACHEL ABIGAIL'),
+    ('10351757', 'CHAVEZ PINTE, JACQUELINE ARIANA'),
+    ('10151643', 'CUADRA VASQUEZ, JOSHUA CALEB'),
+    ('10351735', 'ELIAS SIERRA, ALEXIA VALENTINA'),
+    ('10351824', 'FUNES AMAS, BETZY ANALYZ'),
+    ('10512956', 'GALICIA CORTEZ, CRISTIAN ENRIQUE'),
+    ('10151692', 'GOMEZ CAMPOS, HENDRICK JAFET'),
+    ('10351721', 'HERRERA AREVALO, LEONARDO ISAAC'),
+    ('10512973', 'LOPEZ ESCOBAR, JENNIFER CAROLINA'),
+    ('10151705', 'LUE HURTADO, SAUL ENRIQUE'),
+    ('10351813', 'MASIN SIERRA, MONICA REBECA'),
+    ('10457205', 'MIRANDA AQUINO, STEPHANIE BEATRIZ'),
+    ('10205961', 'PEREZ HURTADO, KELVIN STEVEN'),
+    ('10387675', 'PEREZ TINO, BERNARDO JOAQUIN'),
+    ('10371453', 'ROJAS ESQUINA, JONATHAN STANLEY'),
+    ('10351800', 'ROMERO ESCOBAR, MIGUEL ARMANDO'),
+    ('10205958', 'SANDOVAL BARRIENTOS, VICTOR MATIAS'),
+    ('10351684', 'SAYES MATE, OSCAR ARISTIDES'),
+    ('10156124', 'SIERRA JIMENEZ, AXEL FRANCISCO'),
+    ('10178370', 'VALDEZ ACEITUNO, YEIMY MELISSA');
+
+  FOR v_user_id, v_student_id IN
+    SELECT u.id, s.id
+    FROM temp_alumnos t
+    JOIN public.users u ON u.email = t.nie || '@estudiante.edu.sv'
+    JOIN public.students s ON s.carnet = t.nie
+  LOOP
+    NULL;
+  END LOOP;
+
+  -- Insertar usuarios y alumnos que no existan
+  INSERT INTO public.users (email, password_hash, rol, activo)
+  SELECT nie || '@estudiante.edu.sv', '$2b$12$4Lp1x9Q4Lq9eWvXpW2QW8uO7P0K0X0Z0Y0W0V0U0T0S0R0Q0P0O0N', 'alumno', true
+  FROM temp_alumnos
+  ON CONFLICT (email) DO NOTHING;
+
+  INSERT INTO public.students (user_id, carnet, nombre)
+  SELECT u.id, t.nie, t.nombre
+  FROM temp_alumnos t
+  JOIN public.users u ON u.email = t.nie || '@estudiante.edu.sv'
+  ON CONFLICT (carnet) DO UPDATE SET nombre = EXCLUDED.nombre;
+
+  INSERT INTO public.enrollments (student_id, section_id)
+  SELECT s.id, v_section_id
+  FROM public.students s
+  JOIN temp_alumnos t ON t.nie = s.carnet
+  ON CONFLICT (student_id, section_id) DO NOTHING;
+
+END $$;
+

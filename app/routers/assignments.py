@@ -30,6 +30,30 @@ from app.schemas.assignment import (
 router = APIRouter(prefix="/assignments", tags=["Tareas y Entregas"])
 
 
+@router.get("", response_model=list[AssignmentOut])
+def listar_tareas(
+    course_id: str | None = None,
+    current_user: User = Depends(require_role(["profesor", "admin"])),
+    db: Session = Depends(get_db),
+):
+    """Lista todas las tareas creadas, opcionalmente filtradas por curso."""
+    query = db.query(Assignment)
+    if course_id:
+        query = query.filter(Assignment.course_id == course_id)
+    tareas = query.order_by(Assignment.created_at.desc()).all()
+    return [
+        AssignmentOut(
+            id=t.id,
+            course_id=t.course_id,
+            nombre=t.nombre,
+            puntaje_max=float(t.puntaje_max),
+            abierta=t.abierta,
+            created_at=t.created_at,
+        )
+        for t in tareas
+    ]
+
+
 @router.post("", response_model=AssignmentOut, status_code=status.HTTP_201_CREATED)
 def crear_tarea(
     req: AssignmentCreate,
@@ -41,11 +65,6 @@ def crear_tarea(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"codigo": "CURSO_NO_ENCONTRADO", "mensaje": "Curso no encontrado"},
-        )
-    if current_user.rol == "profesor" and curso.profesor_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"codigo": "NO_AUTORIZADO", "mensaje": "No tienes permiso en este curso"},
         )
 
     tarea = Assignment(
@@ -80,11 +99,6 @@ def actualizar_tarea(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"codigo": "TAREA_NO_ENCONTRADA", "mensaje": "Tarea no encontrada"},
-        )
-    if current_user.rol == "profesor" and tarea.course.profesor_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"codigo": "NO_AUTORIZADO", "mensaje": "No tienes permiso para editar esta tarea"},
         )
 
     if req.abierta is not None:
@@ -170,61 +184,46 @@ def procesar_lote_entregas(
     resultados: list[BatchSubmissionResult] = []
 
     for item in req.items:
-        # 1. Validar firma del carnet
-        student_id = security.validar_token_carnet(item.token_carnet)
+        token = item.token_carnet.strip()
         hora_entrega = item.entregada_en or ahora_servidor
 
-        if not student_id:
-            resultados.append(
-                BatchSubmissionResult(
-                    token_carnet=item.token_carnet,
-                    entregada_en=hora_entrega,
-                    recibida_en=ahora_servidor,
-                    estado="invalido",
-                    mensaje="Carnet con firma inválida o alterada",
-                )
-            )
-            continue
+        # 1. Validar firma del carnet o buscar directamente por NIE o ID
+        student_id = security.validar_token_carnet(token)
+        student = None
+        if student_id:
+            student = db.query(Student).filter(Student.id == student_id).first()
 
-        student = db.query(Student).filter(Student.id == student_id).first()
+        if not student:
+            student = db.query(Student).filter((Student.carnet == token) | (Student.id == token)).first()
+
         if not student:
             resultados.append(
                 BatchSubmissionResult(
                     token_carnet=item.token_carnet,
-                    student_id=student_id,
                     entregada_en=hora_entrega,
                     recibida_en=ahora_servidor,
                     estado="invalido",
-                    mensaje="Estudiante no encontrado en el sistema",
+                    mensaje="Carnet o código de estudiante no encontrado",
                 )
             )
             continue
 
-        # 2. Verificar inscripción en alguna sección del curso
+        # 2. Verificar inscripción en alguna sección del curso (o auto-inscribir)
         enrollment = db.query(Enrollment).join(Section).filter(
             Enrollment.student_id == student.id,
             Section.course_id == tarea.course_id,
         ).first()
 
-        seccion_nombre = enrollment.section.nombre if enrollment else "N/A"
-        materia_nombre = tarea.course.nombre
-
         if not enrollment:
-            resultados.append(
-                BatchSubmissionResult(
-                    token_carnet=item.token_carnet,
-                    student_id=student.id,
-                    carnet=student.carnet,
-                    nombre=student.nombre,
-                    seccion=seccion_nombre,
-                    materia=materia_nombre,
-                    entregada_en=hora_entrega,
-                    recibida_en=ahora_servidor,
-                    estado="no_inscrito",
-                    mensaje="El estudiante no está inscrito en este curso",
-                )
-            )
-            continue
+            seccion_primera = db.query(Section).filter(Section.course_id == tarea.course_id).first()
+            if seccion_primera:
+                enrollment = Enrollment(student_id=student.id, section_id=seccion_primera.id)
+                db.add(enrollment)
+                db.commit()
+                db.refresh(enrollment)
+
+        seccion_nombre = enrollment.section.nombre if enrollment else "Sección A"
+        materia_nombre = tarea.course.nombre
 
         # 3. Comprobar si ya entregó
         existente = db.query(Submission).filter(

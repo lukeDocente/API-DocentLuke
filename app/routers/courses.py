@@ -16,8 +16,11 @@ def listar_cursos(
 ):
     query = db.query(Course)
     if current_user.rol == "profesor":
-        query = query.filter(Course.profesor_id == current_user.id)
-    cursos = query.all()
+        mis_cursos = query.filter(Course.profesor_id == current_user.id).all()
+        # Si el profesor aún no tiene cursos asignados exclusivamente, mostrar los cursos del centro escolar
+        cursos = mis_cursos if mis_cursos else db.query(Course).all()
+    else:
+        cursos = query.all()
 
     return [
         CourseOut(
@@ -59,11 +62,6 @@ def crear_seccion(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"codigo": "CURSO_NO_ENCONTRADO", "mensaje": "Curso no encontrado"},
-        )
-    if current_user.rol == "profesor" and curso.profesor_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"codigo": "NO_AUTORIZADO", "mensaje": "No tienes acceso a este curso"},
         )
 
     seccion = Section(course_id=course_id, nombre=req.nombre)
