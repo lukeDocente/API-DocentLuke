@@ -1,13 +1,16 @@
 import csv
 import io
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
+import openpyxl
 
 from app.core import security
 from app.core.db import get_db
 from app.core.security import require_role
 from app.models import Course, Enrollment, Section, Student, User
+from app.services.carnet import generar_carnet_png
 
 router = APIRouter(prefix="/admin", tags=["Administración"])
 
@@ -82,6 +85,8 @@ def crear_alumno(
             db.commit()
             seccion_info = f"{seccion.course.nombre} - {seccion.nombre}"
 
+    token_carnet = security.crear_token_carnet(student.id)
+
     return {
         "status": "success",
         "mensaje": f"Alumno '{nombre}' creado exitosamente. Ya puede iniciar sesión con {email}.",
@@ -93,8 +98,46 @@ def crear_alumno(
             "nombre": student.nombre,
             "tel_encargado": student.tel_encargado,
             "seccion": seccion_info,
+            "token_carnet": token_carnet,
         },
     }
+
+
+@router.get("/students/{id}/carnet")
+def descargar_carnet_estudiante(
+    id: str,
+    current_user: User = Depends(require_role(["admin", "profesor"])),
+    db: Session = Depends(get_db),
+):
+    """Genera y descarga directamente la imagen oficial del carnet estudiantil con código QR."""
+    student = db.query(Student).filter(Student.id == id).first()
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"codigo": "ALUMNO_NO_ENCONTRADO", "mensaje": "Estudiante no encontrado"},
+        )
+
+    seccion_str = "Sección General"
+    institucion_str = 'CENTRO ESCOLAR "JOSE QUETGLAS"'
+    if student.enrollments:
+        sec = student.enrollments[0].section
+        if sec and sec.course:
+            seccion_str = f"{sec.course.nombre} - {sec.nombre}"
+
+    png_bytes = generar_carnet_png(
+        student_id=student.id,
+        carnet=student.carnet,
+        nombre=student.nombre,
+        institucion=institucion_str,
+        seccion=seccion_str,
+    )
+
+    clean_name = student.carnet.replace(" ", "_")
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="Carnet_{clean_name}.png"'},
+    )
 
 
 @router.get("/students")
@@ -146,104 +189,203 @@ def listar_secciones_disponibles(
 
 
 @router.post("/import")
-async def importar_csv(
+async def importar_alumnos_archivo(
     file: UploadFile = File(...),
-    current_user: User = Depends(require_role(["admin"])),
+    current_user: User = Depends(require_role(["admin", "profesor"])),
     db: Session = Depends(get_db),
 ):
-    """Importa alumnos, cursos, secciones y encargados mediante un archivo CSV.
-    Columnas esperadas:
-    email,password,nombre,carnet,tel_encargado,curso,seccion,ciclo
-    """
-    if not file.filename.endswith(".csv"):
+    """Importa alumnos desde un archivo Excel (.xlsx) oficial del MINEDUCYT o un archivo CSV."""
+    filename_lower = file.filename.lower()
+    if not (filename_lower.endswith(".xlsx") or filename_lower.endswith(".csv")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"codigo": "FORMATO_INVALIDO", "mensaje": "El archivo debe ser un CSV"},
+            detail={"codigo": "FORMATO_INVALIDO", "mensaje": "El archivo debe ser un Excel (.xlsx) o CSV (.csv)"},
         )
 
     contenido = await file.read()
-    texto = contenido.decode("utf-8-sig")
-    lector = csv.DictReader(io.StringIO(texto))
-
     procesados = 0
     errores = []
 
-    for fila_num, fila in enumerate(lector, start=2):
+    if filename_lower.endswith(".xlsx"):
         try:
-            email = fila.get("email", "").strip().lower()
-            password = fila.get("password", "Alumno123*").strip()
-            nombre = fila.get("nombre", "").strip()
-            carnet = fila.get("carnet", "").strip()
-            tel_encargado = fila.get("tel_encargado", "").strip() or None
-            curso_nombre = fila.get("curso", "").strip()
-            seccion_nombre = fila.get("seccion", "").strip()
-            ciclo = fila.get("ciclo", "2026-1").strip()
+            wb = openpyxl.load_workbook(io.BytesIO(contenido))
+            sheet = wb.active
 
-            if not email or not carnet or not nombre:
-                errores.append(f"Fila {fila_num}: faltan campos obligatorios (email, carnet o nombre)")
-                continue
+            # Detectar si es formato oficial MINEDUCYT (e.g. 5°.xlsx)
+            curso_nombre = "5° Grado - Educación Básica"
+            seccion_nombre = "Sección A"
+            ciclo = "2026"
 
-            # 1. Crear o buscar usuario alumno
-            user = db.query(User).filter(User.email == email).first()
-            if not user:
-                user = User(
-                    email=email,
-                    password_hash=security.hash_password(password),
-                    rol="alumno",
-                    activo=True,
-                )
-                db.add(user)
+            # Intentar leer metadatos de las primeras filas si existen
+            for r in range(1, 10):
+                c1 = str(sheet.cell(row=r, column=1).value or "")
+                c4 = str(sheet.cell(row=r, column=4).value or "")
+                if "servicio educativo" in c1.lower() and c4:
+                    curso_nombre = c4.strip()
+                elif "sección" in c1.lower() and c4:
+                    seccion_nombre = c4.strip()
+                elif "año lectivo" in c1.lower() and c4:
+                    ciclo = str(sheet.cell(row=r, column=4).value or "2026").strip()
+
+            # Buscar o crear Curso
+            curso = db.query(Course).filter(Course.nombre == curso_nombre).first()
+            if not curso:
+                curso = Course(nombre=curso_nombre, profesor_id=current_user.id, ciclo=ciclo)
+                db.add(curso)
                 db.commit()
-                db.refresh(user)
+                db.refresh(curso)
 
-            # 2. Crear o buscar alumno
-            student = db.query(Student).filter(Student.user_id == user.id).first()
-            if not student:
-                student = Student(
-                    user_id=user.id,
-                    carnet=carnet,
-                    nombre=nombre,
-                    tel_encargado=tel_encargado,
-                )
-                db.add(student)
+            # Buscar o crear Sección
+            seccion = db.query(Section).filter(Section.course_id == curso.id, Section.nombre == seccion_nombre).first()
+            if not seccion:
+                seccion = Section(course_id=curso.id, nombre=seccion_nombre)
+                db.add(seccion)
                 db.commit()
-                db.refresh(student)
+                db.refresh(seccion)
 
-            # 3. Asignar curso y sección si se especificaron
-            if curso_nombre and seccion_nombre:
-                curso = db.query(Course).filter(Course.nombre == curso_nombre).first()
-                if not curso:
-                    # Crear curso asignado temporalmente al admin que lo importa
-                    curso = Course(
-                        nombre=curso_nombre,
-                        profesor_id=current_user.id,
-                        ciclo=ciclo,
-                    )
-                    db.add(curso)
-                    db.commit()
-                    db.refresh(curso)
+            # Buscar la fila de encabezados o estudiantes
+            start_row = 1
+            for r in range(1, min(20, sheet.max_row + 1)):
+                val1 = str(sheet.cell(row=r, column=1).value or "").lower()
+                val2 = str(sheet.cell(row=r, column=2).value or "").lower()
+                if "no." in val1 or "nie" in val2:
+                    start_row = r + 1
+                    break
 
-                seccion = db.query(Section).filter(Section.course_id == curso.id, Section.nombre == seccion_nombre).first()
-                if not seccion:
-                    seccion = Section(course_id=curso.id, nombre=seccion_nombre)
-                    db.add(seccion)
-                    db.commit()
-                    db.refresh(seccion)
+            for r in range(start_row, sheet.max_row + 1):
+                c1 = sheet.cell(row=r, column=1).value
+                c2 = sheet.cell(row=r, column=2).value
+                c3 = sheet.cell(row=r, column=3).value
 
-                # Inscribir
-                inscrito = db.query(Enrollment).filter(
-                    Enrollment.student_id == student.id,
-                    Enrollment.section_id == seccion.id,
-                ).first()
-                if not inscrito:
-                    enrollment = Enrollment(student_id=student.id, section_id=seccion.id)
-                    db.add(enrollment)
-                    db.commit()
+                if not c2 or not c3:
+                    continue
 
-            procesados += 1
+                carnet_str = str(c2).strip()
+                nombre_str = str(c3).strip()
+                email_estudiante = f"{carnet_str}@estudiante.edu.sv"
+
+                try:
+                    # 1. Crear o buscar usuario
+                    user = db.query(User).filter(User.email == email_estudiante).first()
+                    if not user:
+                        user = User(
+                            email=email_estudiante,
+                            password_hash=security.hash_password("Alumno123*"),
+                            rol="alumno",
+                            activo=True,
+                        )
+                        db.add(user)
+                        db.commit()
+                        db.refresh(user)
+
+                    # 2. Crear o buscar estudiante
+                    student = db.query(Student).filter(Student.carnet == carnet_str).first()
+                    if not student:
+                        student = Student(
+                            user_id=user.id,
+                            carnet=carnet_str,
+                            nombre=nombre_str,
+                        )
+                        db.add(student)
+                        db.commit()
+                        db.refresh(student)
+                    else:
+                        student.nombre = nombre_str
+                        db.commit()
+
+                    # 3. Matricular
+                    inscrito = db.query(Enrollment).filter(
+                        Enrollment.student_id == student.id,
+                        Enrollment.section_id == seccion.id,
+                    ).first()
+                    if not inscrito:
+                        enrollment = Enrollment(student_id=student.id, section_id=seccion.id)
+                        db.add(enrollment)
+                        db.commit()
+
+                    procesados += 1
+                except Exception as ex:
+                    db.rollback()
+                    errores.append(f"Fila {r}: {ex}")
+
         except Exception as e:
-            db.rollback()
-            errores.append(f"Fila {fila_num}: error procesando - {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"codigo": "ERROR_EXCEL", "mensaje": f"No se pudo procesar el Excel: {e}"},
+            )
+
+    else:
+        # Procesamiento de archivo CSV
+        texto = contenido.decode("utf-8-sig")
+        lector = csv.DictReader(io.StringIO(texto))
+
+        for fila_num, fila in enumerate(lector, start=2):
+            try:
+                email = fila.get("email", "").strip().lower()
+                password = fila.get("password", "Alumno123*").strip()
+                nombre = fila.get("nombre", "").strip()
+                carnet = fila.get("carnet", "").strip()
+                tel_encargado = fila.get("tel_encargado", "").strip() or None
+                curso_nombre = fila.get("curso", "").strip()
+                seccion_nombre = fila.get("seccion", "").strip()
+                ciclo = fila.get("ciclo", "2026-1").strip()
+
+                if not email or not carnet or not nombre:
+                    errores.append(f"Fila {fila_num}: faltan campos obligatorios (email, carnet o nombre)")
+                    continue
+
+                user = db.query(User).filter(User.email == email).first()
+                if not user:
+                    user = User(
+                        email=email,
+                        password_hash=security.hash_password(password),
+                        rol="alumno",
+                        activo=True,
+                    )
+                    db.add(user)
+                    db.commit()
+                    db.refresh(user)
+
+                student = db.query(Student).filter(Student.user_id == user.id).first()
+                if not student:
+                    student = Student(
+                        user_id=user.id,
+                        carnet=carnet,
+                        nombre=nombre,
+                        tel_encargado=tel_encargado,
+                    )
+                    db.add(student)
+                    db.commit()
+                    db.refresh(student)
+
+                if curso_nombre and seccion_nombre:
+                    curso = db.query(Course).filter(Course.nombre == curso_nombre).first()
+                    if not curso:
+                        curso = Course(nombre=curso_nombre, profesor_id=current_user.id, ciclo=ciclo)
+                        db.add(curso)
+                        db.commit()
+                        db.refresh(curso)
+
+                    seccion = db.query(Section).filter(Section.course_id == curso.id, Section.nombre == seccion_nombre).first()
+                    if not seccion:
+                        seccion = Section(course_id=curso.id, nombre=seccion_nombre)
+                        db.add(seccion)
+                        db.commit()
+                        db.refresh(seccion)
+
+                    inscrito = db.query(Enrollment).filter(
+                        Enrollment.student_id == student.id,
+                        Enrollment.section_id == seccion.id,
+                    ).first()
+                    if not inscrito:
+                        enrollment = Enrollment(student_id=student.id, section_id=seccion.id)
+                        db.add(enrollment)
+                        db.commit()
+
+                procesados += 1
+            except Exception as e:
+                db.rollback()
+                errores.append(f"Fila {fila_num}: error procesando - {str(e)}")
 
     return {
         "procesados": procesados,
