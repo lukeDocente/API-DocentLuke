@@ -12,8 +12,8 @@ db_url = settings.sqlalchemy_database_url
 if db_url.startswith("sqlite"):
     connect_args["check_same_thread"] = False
 else:
-    # Timeout de 10 segundos para no bloquear el arranque
-    connect_args["connect_timeout"] = 10
+    # Timeout corto para no demorar el inicio
+    connect_args["connect_timeout"] = 4
 
 try:
     engine = create_engine(
@@ -139,6 +139,7 @@ def seed_admin(db: Session):
 
         # 6. Sembrar los 25 alumnos oficiales de 5°.xlsx
         inscritos_count = 0
+        hash_alumno = security.hash_password("Alumno123*")
         for nie, nombre in ESTUDIANTES_5TO:
             email_est = f"{nie}@estudiante.edu.sv"
 
@@ -146,7 +147,7 @@ def seed_admin(db: Session):
             if not user_est:
                 user_est = User(
                     email=email_est,
-                    password_hash=security.hash_password("Alumno123*"),
+                    password_hash=hash_alumno,
                     rol="alumno",
                     activo=True,
                 )

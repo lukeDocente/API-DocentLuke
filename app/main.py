@@ -8,8 +8,9 @@ from app.routers import admin, assignments, attendance, auth, courses, student, 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Inicializar tablas al arrancar la aplicación
-    init_db()
+    # Inicializar la base de datos en segundo plano para no demorar el bind del puerto
+    import asyncio
+    asyncio.create_task(asyncio.to_thread(init_db))
     yield
 
 
