@@ -138,3 +138,4 @@ def generar_carnet_png(
     buf = io.BytesIO()
     img.save(buf, format="PNG", dpi=(300, 300), optimize=True)
     return buf.getvalue()
+
