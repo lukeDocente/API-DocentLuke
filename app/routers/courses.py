@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db
+from app.core.db import get_db, seed_admin
 from app.core.security import require_role
 from app.models import Assignment, AttendanceRecord, AttendanceSession, Course, Enrollment, Section, Submission, User
 from app.schemas.course import CourseCreate, CourseOut, CourseUpdate, SectionCreate, SectionOut, SectionUpdate
@@ -17,10 +17,17 @@ def listar_cursos(
     query = db.query(Course)
     if current_user.rol == "profesor":
         mis_cursos = query.filter(Course.profesor_id == current_user.id).all()
-        # Si el profesor aún no tiene cursos asignados exclusivamente, mostrar los cursos del centro escolar
         cursos = mis_cursos if mis_cursos else db.query(Course).all()
     else:
         cursos = query.all()
+
+    # Si la base de datos aún no tiene cursos creados, auto-sembrar curso oficial y sección A
+    if not cursos:
+        try:
+            seed_admin(db)
+            cursos = db.query(Course).all()
+        except Exception:
+            pass
 
     return [
         CourseOut(

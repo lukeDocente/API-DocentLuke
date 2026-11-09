@@ -6,25 +6,28 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.models import Base
 
-connect_args = {}
 db_url = settings.sqlalchemy_database_url
 
-if db_url.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
-else:
-    # Timeout corto para no demorar el inicio
-    connect_args["connect_timeout"] = 4
 
-try:
-    engine = create_engine(
-        db_url,
-        connect_args=connect_args,
-        pool_pre_ping=True,
-    )
-except Exception as e:
-    print(f"[DB] Error creando engine para {db_url}: {e}", file=sys.stderr, flush=True)
-    engine = create_engine("sqlite:///./asistencia.db", connect_args={"check_same_thread": False})
+def build_engine():
+    global db_url
+    if db_url.startswith("sqlite"):
+        return create_engine(db_url, connect_args={"check_same_thread": False})
+    try:
+        eng = create_engine(
+            db_url,
+            connect_args={"connect_timeout": 3},
+            pool_pre_ping=True,
+        )
+        with eng.connect() as conn:
+            pass
+        print(f"[DB] Conexión exitosa a base de datos remota.", flush=True)
+        return eng
+    except Exception as e:
+        print(f"[DB] Base remota no disponible ({e}). Activando SQLite local de respaldo...", file=sys.stderr, flush=True)
+        return create_engine("sqlite:///./asistencia.db", connect_args={"check_same_thread": False})
 
+engine = build_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 import openpyxl
 
 from app.core import security
-from app.core.db import get_db
+from app.core.db import get_db, seed_admin
 from app.core.security import require_role
 from app.models import Course, Enrollment, Section, Student, User
 from app.services.carnet import generar_carnet_png
@@ -157,6 +157,12 @@ def listar_alumnos(
 ):
     """Lista todos los alumnos registrados para el panel de administración."""
     alumnos = db.query(Student).all()
+    if len(alumnos) < 5:
+        try:
+            seed_admin(db)
+            alumnos = db.query(Student).all()
+        except Exception:
+            pass
     resultado = []
     for a in alumnos:
         u = a.user
@@ -286,6 +292,12 @@ def listar_secciones_disponibles(
 ):
     """Lista todas las secciones y cursos para facilitar la inscripción."""
     secciones = db.query(Section).all()
+    if not secciones:
+        try:
+            seed_admin(db)
+            secciones = db.query(Section).all()
+        except Exception:
+            pass
     return [
         {
             "id": s.id,
